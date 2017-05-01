@@ -5,7 +5,7 @@ const timestampToDatetime = require('../lib/timestampToDatetime')
 
 module.exports = (req, res, next) => co(function *() {
   
-  var { duniterServer, sigValidity, msValidity, sigWindow, idtyWindow } = req.app.locals
+  var { duniterServer, sigValidity, msValidity, sigWindow, idtyWindow, sigQty } = req.app.locals
   
   try {
     // get blockchain timestamp
@@ -20,10 +20,10 @@ module.exports = (req, res, next) => co(function *() {
     
     // Récupérer les paramètres
     var days = req.query.d || 65 // Valeur par défaut
-    var order = req.query.d && req.query.order || 'asc' // Valeur par défaut
-    var sort_by = req.query.sort_by || "creationIdty"; // Valeur par défaut
+    var order = req.query.d && req.query.order || 'desc' // Valeur par défaut
+    var sort_by = req.query.sort_by || "sigCount"; // Valeur par défaut
     var hideIdtyWithZeroCert = req.query.hideIdtyWithZeroCert || "no"; // Valeur par défaut
-    var sortSig = req.query.sortSig || "Creation"; // Valeur par défaut
+    var sortSig = req.query.sortSig || "Availability"; // Valeur par défaut
     var format = req.query.format || 'HTML'
     
     console.log(req.query);
@@ -108,7 +108,8 @@ module.exports = (req, res, next) => co(function *() {
         uid: resultQueryIdtys[i].uid,
         hash: resultQueryIdtys[i].hash,
         expires_on: resultQueryIdtys[i].expires_on,
-        nbValidCert: 0
+        nbValidCert: 0,
+	registrationAvailability: 0
       });
       
       // Calculer le nombre maximal de certifications reçues par l'identité courante
@@ -170,17 +171,30 @@ module.exports = (req, res, next) => co(function *() {
       { tabSort.push(idty.expires_on); }
     }
     else if (sort_by == "sigCount")
-    { 
-      for (let i=0;i<idtysPendingCertifsList.length;i++)
-      {
-        let nbValidCert = 0;
-        for (const cert of idtysPendingCertifsList[i])
+    {
+        // idtys loop
+	for (let i=0;i<idtysPendingCertifsList.length;i++)
         {
-          if (cert.validBlockStamp) { nbValidCert++; }
+	  let nbValidCert = 0;
+	  let registrationAvailability= 0;
+	  // Count nbValidCert and calculate registrationAvailability timestamp
+	  for (const cert of idtysPendingCertifsList[i])
+	  {
+	    if (cert.validBlockStamp)
+	    {
+	      nbValidCert++;
+	      registrationAvailability = (cert.timestampWritable > registrationAvailability) ? cert.timestampWritable : registrationAvailability;
+	    }
+	  }
+	  identitiesList[i].nbValidCert = nbValidCert;
+	  identitiesList[i].registrationAvailability = registrationAvailability;
+	  
+	  // Calculate registrationAvailabilityDelay
+	  let registrationAvailabilityDelay = (registrationAvailability > currentBlockchainTimestamp) ? (registrationAvailability-currentBlockchainTimestamp):0;
+	  
+	  // Trier les identités au dossier complet par durée entre date de disponibilité et date d'expiration maximale théorique (=sigWindow-registrationAvailabilityDelay)
+	  tabSort.push(sigWindow-registrationAvailabilityDelay + (sigValidity*nbValidCert));
         }
-        identitiesList[i].nbValidCert = nbValidCert;
-        tabSort.push(nbValidCert);
-      }
     }
     else { errors += "<p>ERREUR : param <i>sort_by</i> invalid !</p>"; }
     
@@ -238,7 +252,7 @@ module.exports = (req, res, next) => co(function *() {
       idtysListOrdered = idtysListOrdered2;
     }
     
-    // Si le client demande la réponse au format JSON =, le faire
+    // Si le client demande la réponse au format JSON, le faire
     if (format == 'JSON')
     {
       // Send JSON reponse
@@ -270,8 +284,9 @@ module.exports = (req, res, next) => co(function *() {
         // Calculer la proportion de temps restant avant l'expiration
         color: function( timestamp, idtyWindow, max )
         {
-          let proportion = ((timestamp-currentBlockchainTimestamp)*max)/idtyWindow;
-          proportion = proportion < 0 ? 0 : proportion > max ? max : proportion 
+	  const MIN = 80;
+          let proportion = ((timestamp-currentBlockchainTimestamp)*(max-MIN))/idtyWindow;
+          proportion = proportion < MIN ? MIN : proportion > max ? max : proportion 
           let hex = parseInt( proportion ).toString(16)
           return `#${hex}${hex}${hex}`
         }
